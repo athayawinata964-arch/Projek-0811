@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>X-CAM | Target + Controller (Kode Angka)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0f1a;
+            font-family: 'Courier New', monospace;
+            color: #0f0;
+            padding: 16px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        .mode-selector {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            background: #000000aa;
+            padding: 12px;
+            border-radius: 40px;
+            backdrop-filter: blur(8px);
+        }
+        .mode-btn {
+            flex: 1;
+            background: #111;
+            border: 1px solid #0f0;
+            color: #0f0;
+            padding: 12px;
+            font-weight: bold;
+            border-radius: 40px;
+            cursor: pointer;
+            text-align: center;
+        }
+        .mode-btn.active {
+            background: #0f0;
+            color: #000;
+            box-shadow: 0 0 12px #0f0;
+        }
+        .panel {
+            background: #000000aa;
+            border: 1px solid #0f0;
+            border-radius: 24px;
+            padding: 18px;
+            backdrop-filter: blur(8px);
+            margin-bottom: 20px;
+        }
+        video {
+            width: 100%;
+            background: #000;
+            border-radius: 16px;
+            border: 1px solid #0f0;
+            transform: scaleX(-1);
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin: 15px 0;
+        }
+        button {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 10px 16px;
+            font-weight: bold;
+            font-family: monospace;
+            border-radius: 40px;
+            cursor: pointer;
+        }
+        input, .code-box {
+            background: #000;
+            border: 1px solid #0f0;
+            color: #0f0;
+            padding: 10px;
+            width: 100%;
+            font-family: monospace;
+            border-radius: 12px;
+            margin: 8px 0;
+            text-align: center;
+            font-size: 1.5rem;
+            letter-spacing: 4px;
+        }
+        .log {
+            background: #000;
+            padding: 8px;
+            height: 120px;
+            overflow-y: auto;
+            font-size: 11px;
+            border-radius: 12px;
+        }
+        .status {
+            background: #0f0;
+            color: #000;
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+        }
+        .flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        @media (max-width: 600px) {
+            body { padding: 8px; }
+            .controls button { padding: 8px 12px; font-size: 12px; }
+        }
+    </style>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <div class="mode-selector" id="modeSelector">
+        <div class="mode-btn" data-mode="target">📱 MODE TARGET</div>
+        <div class="mode-btn" data-mode="controller">🎮 MODE CONTROLLER</div>
+    </div>
+
+    <!-- Panel Target -->
+    <div id="targetPanel" class="panel" style="display: none;">
+        <h3>🔴 MODE TARGET</h3>
+        <div class="flex"><span class="status">📡 STATUS: </span><span id="targetStatus">Menunggu koneksi</span></div>
+        <div><p>🔑 KODE ANGKA (6 digit) - KIRIM KE CONTROLLER:</p>
+            <div class="code-box" id="targetCodeDisplay">------</div>
+            <button id="refreshCodeBtn">🔄 GENERATE KODE BARU</button>
+        </div>
+        <video id="targetVideo" autoplay playsinline muted style="display:none;"></video>
+        <div class="log" id="targetLog"></div>
+    </div>
+
+    <!-- Panel Controller -->
+    <div id="controllerPanel" class="panel" style="display: none;">
+        <h3>🎮 MODE CONTROLLER</h3>
+        <div class="flex"><span class="status">🔗 KONEKSI: </span><span id="connStatus">Terputus</span></div>
+        <div><p>📲 MASUKKAN KODE ANGKA TARGET (6 digit):</p>
+            <input type="text" id="targetCodeInput" maxlength="6" placeholder="contoh: 123456">
+            <button id="connectBtn">🔗 HUBUNGKAN & AKTIFKAN KAMERA</button>
+        </div>
+        <video id="remoteVideo" autoplay playsinline muted></video>
+        <div class="controls">
+            <button id="controllerFlashBtn">💡 FLASH TARGET</button>
+            <button id="controllerSwitchCamBtn">🔄 GANTI KAMERA</button>
+            <button id="captureBtn">📸 SCREENSHOT</button>
+        </div>
+        <div id="captureResult"></div>
+        <div class="log" id="controllerLog"></div>
+    </div>
+</div>
+
+<script>
+    // ======================== JS LENGKAP ========================
+    let currentMode = "target";
+    let peer = null;
+    let localStream = null;
+    let remoteStream = null;
+    let conn = null;
+    let call = null;
+    let currentFacingMode = "environment";
+    let flashEnabled = false;
+    let currentTargetCode = "";
+
+    const targetPanel = document.getElementById('targetPanel');
+    const controllerPanel = document.getElementById('controllerPanel');
+    const modeBtns = document.querySelectorAll('.mode-btn');
+    const targetVideo = document.getElementById('targetVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const targetStatusSpan = document.getElementById('targetStatus');
+    const connStatusSpan = document.getElementById('connStatus');
+    const targetLogDiv = document.getElementById('targetLog');
+    const controllerLogDiv = document.getElementById('controllerLog');
+    const targetCodeDisplay = document.getElementById('targetCodeDisplay');
+    const refreshCodeBtn = document.getElementById('refreshCodeBtn');
+    const targetCodeInput = document.getElementById('targetCodeInput');
+    const connectBtn = document.getElementById('connectBtn');
+
+    function addLog(element, msg) {
+        const d = document.createElement('div');
+        d.innerHTML = `❯ ${msg}`;
+        element.appendChild(d);
+        element.scrollTop = element.scrollHeight;
+        console.log(msg);
+    }
+
+    // ======================== MODE TARGET ========================
+    async function initTargetMode() {
+        if (peer) peer.destroy();
+        generateNewCode();
+        // Gunakan kode sebagai ID PeerJS
+        peer = new Peer(currentTargetCode, {
+            config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+        });
+        peer.on('open', id => {
+            addLog(targetLogDiv, `Target siap, kode: ${id}`);
+            targetStatusSpan.innerText = "Menunggu controller...";
+        });
+        peer.on('connection', incomingConn => {
+            conn = incomingConn;
+            addLog(targetLogDiv, "Controller terhubung!");
+            targetStatusSpan.innerText = "Controller terhubung, siap perintah";
+            setupTargetDataChannel(conn);
+        });
+        peer.on('call', async incomingCall => {
+            addLog(targetLogDiv, "Controller meminta video stream...");
+            if (localStream) {
+                incomingCall.answer(localStream);
+                call = incomingCall;
+                addLog(targetLogDiv, "✅ Video stream aktif");
+                targetStatusSpan.innerText = "Streaming aktif";
+            } else {
+                addLog(targetLogDiv, "❌ Kamera belum aktif. Controller akan mengirim perintah startCamera.");
+                incomingCall.close();
+            }
+        });
+        peer.on('error', err => {
+            if (err.type === 'unavailable-id') {
+                addLog(targetLogDiv, `Kode ${currentTargetCode} sudah dipakai, generate ulang...`);
+                generateNewCode();
+                initTargetMode();
+            } else {
+                addLog(targetLogDiv, `Error: ${err}`);
+            }
+        });
+    }
+
+    function generateNewCode() {
+        currentTargetCode = Math.floor(100000 + Math.random() * 900000).toString();
+        targetCodeDisplay.innerText = currentTargetCode;
+    }
+
+    function setupTargetDataChannel(connection) {
+        connection.on('data', async (data) => {
+            if (data.type === 'command') {
+                addLog(targetLogDiv, `Perintah: ${data.cmd}`);
+                await handleTargetCommand(data.cmd);
+            }
+        });
+        connection.on('close', () => {
+            addLog(targetLogDiv, "Controller putus");
+            targetStatusSpan.innerText = "Controller putus";
+            if (localStream) {
+                localStream.getTracks().forEach(t => t.stop());
+                localStream = null;
+                targetVideo.style.display = 'none';
+                targetVideo.srcObject = null;
+            }
+        });
+    }
+
+    async function handleTargetCommand(cmd) {
+        switch(cmd) {
+            case 'startCamera':
+                await enableCamera();
+                break;
+            case 'toggleFlash':
+                await toggleFlash();
+                break;
+            case 'switchCamera':
+                await switchCamera();
+                break;
+            case 'capture':
+                captureAndSend();
+                break;
+            default:
+                addLog(targetLogDiv, `Perintah tidak dikenal: ${cmd}`);
+        }
+    }
+
+    async function enableCamera() {
+        if (localStream) {
+            addLog(targetLogDiv, "Kamera sudah aktif");
+            return;
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { exact: currentFacingMode } },
+                audio: false
+            });
+            localStream = stream;
+            targetVideo.srcObject = stream;
+            targetVideo.style.display = 'block';
+            addLog(targetLogDiv, "Kamera diaktifkan oleh controller");
+            targetStatusSpan.innerText = "Kamera ON";
+            if (call && !call._answer) {
+                call.answer(localStream);
+            }
+        } catch (err) {
+            addLog(targetLogDiv, `Gagal akses kamera: ${err.message}`);
+            if (conn) conn.send({ type: 'error', msg: err.message });
+        }
+    }
+
+    async function toggleFlash() {
+        if (!localStream) { addLog(targetLogDiv, "Kamera belum aktif"); return; }
+        const track = localStream.getVideoTracks()[0];
+        if (!track.getCapabilities().torch) { addLog(targetLogDiv, "Flash tidak support"); return; }
+        flashEnabled = !flashEnabled;
+        await track.applyConstraints({ advanced: [{ torch: flashEnabled }] });
+        addLog(targetLogDiv, `Flash ${flashEnabled ? "ON" : "OFF"}`);
+        if (conn) conn.send({ type: 'flashStatus', state: flashEnabled });
+    }
+
+    async function switchCamera() {
+        if (!localStream) return;
+        currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+        const newStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { exact: currentFacingMode } },
+            audio: false
+        });
+        const newTrack = newStream.getVideoTracks()[0];
+        const oldTrack = localStream.getVideoTracks()[0];
+        localStream.removeTrack(oldTrack);
+        localStream.addTrack(newTrack);
+        targetVideo.srcObject = localStream;
+        if (call && call.peerConnection) {
+            const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'video');
+            if (sender) sender.replaceTrack(newTrack);
+        }
+        addLog(targetLogDiv, `Ganti kamera ke ${currentFacingMode === 'user' ? 'DEPAN' : 'BELAKANG'}`);
+    }
+
+    function captureAndSend() {
+        if (!targetVideo.videoWidth) { addLog(targetLogDiv, "Video belum siap"); return; }
+        const canvas = document.createElement('canvas');
+        canvas.width = targetVideo.videoWidth;
+        canvas.height = targetVideo.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(targetVideo, 0, 0);
+        const imgData = canvas.toDataURL('image/png');
+        if (conn) conn.send({ type: 'capture', imageData: imgData });
+        addLog(targetLogDiv, "Screenshot dikirim");
+    }
+
+    refreshCodeBtn.addEventListener('click', () => {
+        if (peer) peer.destroy();
+        generateNewCode();
+        initTargetMode();
+    });
+
+    // ======================== MODE CONTROLLER ========================
+    function initControllerMode() {
+        if (peer) peer.destroy();
+        peer = new Peer({
+            config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+        });
+        peer.on('open', id => addLog(controllerLogDiv, `Controller ID: ${id}`));
+        peer.on('error', err => addLog(controllerLogDiv, `Error: ${err}`));
+    }
+
+    function connectToTarget(targetCode) {
+        if (!peer) { addLog(controllerLogDiv, "Peer belum siap"); return; }
+        addLog(controllerLogDiv, `Menghubungi kode ${targetCode}...`);
+        const dataConn = peer.connect(targetCode);
+        dataConn.on('open', () => {
+            addLog(controllerLogDiv, "Data channel terbuka");
+            conn = dataConn;
+            connStatusSpan.innerText = "Terhubung";
+            setupControllerDataChannel(conn);
+            // Kirim perintah nyalakan kamera
+            sendCommand('startCamera');
+        });
+        dataConn.on('error', err => addLog(controllerLogDiv, `Error: ${err}`));
+
+        const videoCall = peer.call(targetCode, null);
+        videoCall.on('stream', stream => {
+            addLog(controllerLogDiv, "✅ Video stream diterima!");
+            remoteStream = stream;
+            remoteVideo.srcObject = stream;
+            connStatusSpan.innerText = "Terhubung + video";
+        });
+        videoCall.on('error', err => addLog(controllerLogDiv, `Call error: ${err}`));
+    }
+
+    function setupControllerDataChannel(connection) {
+        connection.on('data', (data) => {
+            if (data.type === 'capture') {
+                const resultDiv = document.getElementById('captureResult');
+                resultDiv.innerHTML = `<img src="${data.imageData}" style="max-width:100%; border:1px solid #0f0;"><br><a href="${data.imageData}" download="screenshot.png">Download</a>`;
+                addLog(controllerLogDiv, "Screenshot diterima");
+            } else if (data.type === 'flashStatus') {
+                addLog(controllerLogDiv, `Flash target ${data.state ? "ON" : "OFF"}`);
+            } else if (data.type === 'error') {
+                addLog(controllerLogDiv, `Error target: ${data.msg}`);
+            }
+        });
+    }
+
+    function sendCommand(cmd) {
+        if (conn && conn.open) {
+            conn.send({ type: 'command', cmd: cmd });
+            addLog(controllerLogDiv, `Perintah dikirim: ${cmd}`);
+        } else {
+            addLog(controllerLogDiv, "Tidak terhubung ke target!");
+        }
+    }
+
+    connectBtn.addEventListener('click', () => {
+        const code = targetCodeInput.value.trim();
+        if (!code || code.length !== 6 || isNaN(code)) {
+            alert("Masukkan kode angka 6 digit!");
+            return;
+        }
+        connectToTarget(code);
+    });
+
+    document.getElementById('controllerFlashBtn')?.addEventListener('click', () => sendCommand('toggleFlash'));
+    document.getElementById('controllerSwitchCamBtn')?.addEventListener('click', () => sendCommand('switchCamera'));
+    document.getElementById('captureBtn')?.addEventListener('click', () => sendCommand('capture'));
+
+    // ======================== SWITCH MODE ========================
+    function setMode(mode) {
+        currentMode = mode;
+        if (mode === 'target') {
+            targetPanel.style.display = 'block';
+            controllerPanel.style.display = 'none';
+            initTargetMode();
+        } else {
+            targetPanel.style.display = 'none';
+            controllerPanel.style.display = 'block';
+            initControllerMode();
+        }
+        modeBtns.forEach(btn => {
+            if (btn.dataset.mode === mode) btn.classList.add('active');
+            else btn.classList.remove('active');
+        });
+    }
+
+    modeBtns.forEach(btn => {
+        btn.addEventListener('click', () => setMode(btn.dataset.mode));
+    });
+
+    // Mulai dengan mode target
+    setMode('target');
+</script>
+</body>
+</html>
